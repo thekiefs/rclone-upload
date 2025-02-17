@@ -1,217 +1,429 @@
 #!/bin/bash
 
-######################
-### Upload Script ####
-######################
-### Version 0.95.5 ###
-######################
+###############################################################################
+#######################   Upload Script Version 0.98.0   ######################
+###############################################################################
 
-####### EDIT ONLY THESE SETTINGS #######
-
-# INSTRUCTIONS
+##################################################
+############ EDIT ONLY THESE SETTINGS ############
 # 1. Edit the settings below to match your setup
 # 2. NOTE: enter RcloneRemoteName WITHOUT ':'
-# 3. Optional: Add additional commands or filters
+# 3. Optional: Use backup directory for rclone jobs
 # 4. Optional: Use bind mount settings for potential traffic shaping/monitoring
-# 5. Optional: Use service accounts in your upload remote
-# 6. Optional: Use backup directory for rclone sync jobs
+# 5. Optional: Use service accounts in your remote uploads
+# 6. Optional: Add additional commands or filters
 
 # REQUIRED SETTINGS
-RcloneCommand="move" # choose your rclone command e.g. move, copy, sync
-RcloneRemoteName="gdrive_vfs" # Name of rclone remote mount WITHOUT ':'.
-RcloneUploadRemoteName="gdrive_upload_vfs" # If you have a second remote created for uploads put it here.  Otherwise use the same remote as RcloneRemoteName.
-LocalFilesShare="/mnt/user/local" # location of the local files without trailing slash you want to rclone to use
-RcloneMountShare="/mnt/user/mount_rclone" # where your rclone mount is located without trailing slash  e.g. /mnt/user/mount_rclone
-MinimumAge="15m" # sync files suffix ms|s|m|h|d|w|M|y
+RemoteBackupJobEnabled="Y" # Y/N. Syncs or Copies files from LocalFilesLocation to BackupLocation, rather than moving from LocalFilesLocation/RcloneRemoteName
+LocalBackupEnabled="Y" # Y/N. Enables rclone to also backup to a local folder/external drive. If N, rclone will only backup to the remote.
+LocalBackupDir="/mnt/disks/ZRS135F4" # If enabled, path to your local backup. Will be created if it doesn't exist.
+LocalBackupDeviceToMount="/dev/sda" # If enabled, make sure this points to the local external disk you will use to backup
+LocalFilesShare="/mnt/user" # location of the local files WITHOUT trailing slash to be uploaded/backed up
+RcloneCommand="copy" # choose your rclone command e.g. move, copy, sync
+RcloneRemoteName="gduva" # Name of rclone remote mount WITHOUT ':'
+RcloneMountName="gduva" # If you have a mount that is different from RcloneRemoteName, put here. Not enabled right now...
+RcloneMountShare="/mnt/user/remote" # where your rclone mount is located without trailing slash  e.g. /mnt/user/mount_rclone
+RcloneFilterFile="/mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName/rclone_filters.txt"
 ModSort="ascending" # "ascending" oldest files first, "descending" newest files first
 
-# Note: Again - remember to NOT use ':' in your remote name above
+# Rclone Remote Bandwidth limits: specify the desired bandwidth in kBytes/s, or use a suffix b|k|M|G, or 'off'/'0' for unlimited. --drive-stop-on-upload-limit is enabled and stops the script
+RcloneBWLimit1Time="01:00"
+RcloneBWLimit1BW="off"
+RcloneBWLimit2Time="08:00"
+RcloneBWLimit2BW="off"
+RcloneBWLimit3Time="16:00"
+RcloneBWLimit3BW="off"
 
-# Bandwidth limits: specify the desired bandwidth in kBytes/s, or use a suffix b|k|M|G. Or 'off' or '0' for unlimited.  The script uses --drive-stop-on-upload-limit which stops the script if the 750GB/day limit is achieved, so you no longer have to slow 'trickle' your files all day if you don't want to e.g. could just do an unlimited job overnight.
-BWLimit1Time="01:00"
-BWLimit1="off"
-BWLimit2Time="08:00"
-BWLimit2="15M"
-BWLimit3Time="16:00"
-BWLimit3="12M"
+# Rclone Remote Bind the mount to an IP address
+RcloneBindMountIPEnabled="N" # Y/N. Choose whether or not to bind traffic to a network adapter
+RcloneMountIP="192.168.1.46" # Choose IP to bind upload to
+NetworkAdapter="eth0" # choose your network adapter. eth0 recommended
+VirtualIPNumber="1" # creates eth0:x e.g. eth0:1
 
-# OPTIONAL SETTINGS
+# Rclone Remote Service Accounts, see: https://github.com/xyou365/AutoRclone
+UseServiceAccountUpload="N" # Y/N Choose whether to use Service Accounts
+ServiceAccountDirectory="/mnt/user/appdata/other/rclone/service_accounts" # Path to your Service Account's .json files
+ServiceAccountFile="sa_gdrive_upload" # Enter characters before counter in your json files e.g. for sa_gdrive_upload1.json -->sa_gdrive_upload100.json, enter "sa_gdrive_upload"
+CountServiceAccounts="15" # Integer number of service accounts to use
 
-# Add name to upload job
-JobName="_daily_upload" # Adds custom string to end of checker file.  Useful if you're running multiple jobs against the same remote.
+# If this is a backup job, run these settings
+HOSTNAME=$(uname -n)
+BackupLocation="$HOSTNAME-backup" # Choose location on mount for deleted sync files, leave blank for root
+BackupDeletedLocation="$HOSTNAME-backup-deleted" # choose location on mount for deleted sync files
+BackupRemoteDeletedRetention="90d" # How long to keep deleted sync files suffix ms|s|m|h|d|w|M|y
 
-# Add extra commands or filters
-Command1="--exclude downloads/**"
-Command2=""
-Command3=""
-Command4=""
-Command5=""
-Command6=""
-Command7=""
-Command8=""
+############ OPTIONAL SETTINGS ############
+# Add extra commands for rclone (either the remote backup or the local backup)
+RcloneRemoteCommand1=""
+RcloneRemoteCommand2=""
+RcloneRemoteCommand3=""
+RcloneLocalCommand1="--include data/media/music/**"
+RcloneLocalCommand2=""
+RcloneLocalCommand3=""
 
-# Bind the mount to an IP address
-CreateBindMount="N" # Y/N. Choose whether or not to bind traffic to a network adapter.
-RCloneMountIP="192.168.1.253" # Choose IP to bind upload to.
-NetworkAdapter="eth0" # choose your network adapter. eth0 recommended.
-VirtualIPNumber="1" # creates eth0:x e.g. eth0:1.
+# Create the filter file with the necessary rules. Comment the filter file out if you don't want to back up appdata
+timestamp=$(date "+%d.%m.%Y %T")
+echo "$timestamp INFO: Creating filter file..."
 
-# Use Service Accounts.  Instructions: https://github.com/xyou365/AutoRclone
-UseServiceAccountUpload="N" # Y/N. Choose whether to use Service Accounts.
-ServiceAccountDirectory="/mnt/user/appdata/other/rclone/service_accounts" # Path to your Service Account's .json files.
-ServiceAccountFile="sa_gdrive_upload" # Enter characters before counter in your json files e.g. for sa_gdrive_upload1.json -->sa_gdrive_upload100.json, enter "sa_gdrive_upload".
-CountServiceAccounts="15" # Integer number of service accounts to use.
+cat <<EOF > "$RcloneFilterFile"
+# Since the default rclone LocalFilesShare command include all folders in /mnt/user/, exclude main data and unraid folders
+- /data/**
+- /domains/**
+- /isos/**
+- /system/**
 
-# Is this a backup job
-BackupJob="N" # Y/N. Syncs or Copies files from LocalFilesLocation to BackupRemoteLocation, rather than moving from LocalFilesLocation/RcloneRemoteName
-BackupRemoteLocation="backup" # choose location on mount for deleted sync files
-BackupRemoteDeletedLocation="backup_deleted" # choose location on mount for deleted sync files
-BackupRetention="90d" # How long to keep deleted sync files suffix ms|s|m|h|d|w|M|y
+# Exclude specific hidden and temporary files
+- *fuse_hidden*
+- *_HIDDEN
+- .recycle**
+- .Recycle.Bin/**
+- *.backup~*
+- *.partial~*
 
-####### END SETTINGS #######
+# If appdata is included, include only necessary backup folders
+- **plex/Library/Application Support/Plex Media Server/Cache/**
+- **plex/Library/Application Support/Plex Media Server/Codecs/**
+- **plex/Library/Application Support/Plex Media Server/Crash Reports/**
+- **plex/Library/Application Support/Plex Media Server/Media/**
+- **plex/Library/Application Support/Plex Media Server/Metadata/**
+- **plex/Library/Application Support/Plex Media Server/Logs/**
+- **plex/Library/Application Support/Plex Media Server/Scanners/**
+- **other/**
+- **jackett/**
+- **QDirStat/**
++ **radarr/Backups/**
+- **radarr/**
++ **sonarr/Backups/**
+- **sonarr/**
++ **lidarr/Backups/**
+- **lidarr/**
+EOF
+
+echo "$timestamp INFO: Filter file created at $RcloneFilterFile..."
 
 ###############################################################################
+################################ END SETTINGS #################################
 #####    DO NOT EDIT BELOW THIS LINE UNLESS YOU KNOW WHAT YOU ARE DOING   #####
 ###############################################################################
 
-####### Preparing mount location variables #######
-if [[  $BackupJob == 'Y' ]]; then
+##################################################
+############ RCLONE SPECIFIC SETTINGS ############
+########### Check if rclone installed ###########
+echo "$timestamp INFO: Checking if rclone installed successfully..."
+if command -v rclone &> /dev/null; then
+	echo "$timestamp INFO: rclone installed successfully - proceeding with upload..."
+else
+	echo "$timestamp INFO: rclone not installed - will try again later...."
+	exit
+fi
+
+############ Preparing mount location variables & files ############
+if [[ $RemoteBackupJobEnabled == 'Y' ]]; then
 	LocalFilesLocation="$LocalFilesShare"
-	echo "$(date "+%d.%m.%Y %T") INFO: *** Backup selected.  Files will be copied or synced from ${LocalFilesLocation} for ${RcloneUploadRemoteName} ***"
+	echo "$timestamp INFO: *** Backup selected. Files will be copied or synced from ${LocalFilesLocation} for ${RcloneRemoteName} ***..."
 else
 	LocalFilesLocation="$LocalFilesShare/$RcloneRemoteName"
-	echo "$(date "+%d.%m.%Y %T") INFO: *** Rclone move selected.  Files will be moved from ${LocalFilesLocation} for ${RcloneUploadRemoteName} ***"
+	echo "$timestamp INFO: *** Rclone move selected. Files will be moved from ${LocalFilesLocation} for ${RcloneRemoteName} ***..."
 fi
 
 RcloneMountLocation="$RcloneMountShare/$RcloneRemoteName" # Location of rclone mount
 
-####### create directory for script files #######
-mkdir -p /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName #for script files
+############ Create directory for script files ############
+mkdir -p /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName # for script files
 
-#######  Check if script already running  ##########
-echo "$(date "+%d.%m.%Y %T") INFO: *** Starting rclone_upload script for ${RcloneUploadRemoteName} ***"
-if [[ -f "/mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/upload_running$JobName" ]]; then
-	echo "$(date "+%d.%m.%Y %T") INFO: Exiting as script already running."
-	exit
+############ If LocalBackupEnabled is true, check if local backup directory is available, if not, create it or mount it ############
+LocalBackupMaxRetries=1  # Max retries after mounting
+LocalBackupRetryCount=0  # Retry count
+
+# Function to create the directory
+create_directory() {
+    mkdir -p "$LocalBackupDir/$BackupLocation" && chmod 755 "$LocalBackupDir/$BackupLocation"
+    return $?
+}
+
+# Function to mount the disk
+mount_disk() {
+    mount "$LocalBackupDeviceToMount" "$LocalBackupDir/$BackupLocation"
+    return $?
+}
+
+# Function to handle retry logic
+handle_retry() {
+    while [[ ! -d "$LocalBackupDir/$BackupLocation" && $LocalBackupRetryCount -le $LocalBackupMaxRetries ]]; do
+        echo "$timestamp WARNING: Local backup directory $LocalBackupDir/$BackupLocation not found. Attempting to create..."
+
+        create_directory
+        if [[ $? -ne 0 ]]; then
+            echo "$timestamp ERROR: Failed to create local backup directory $LocalBackupDir/$BackupLocation. Attempting to mount disk..."
+            
+            # Try mounting the disk
+            mount_disk
+            if [[ $? -ne 0 ]]; then
+                echo "$timestamp ERROR: Failed to mount local backup directory $LocalBackupDir/$BackupLocation. Exiting..."
+            fi
+            echo "$timestamp INFO: Local backup directory $LocalBackupDir/$BackupLocation mounted successfully!"
+            
+            LocalBackupRetryCount=$((LocalBackupRetryCount + 1))
+
+            # Retry directory creation after mounting
+            echo "$timestamp INFO: Retrying folder creation after mounting..."
+        else
+            echo "$timestamp INFO: Local backup directory $LocalBackupDir/$BackupLocation created successfully!"
+            break
+        fi
+    done
+}
+
+############ Main LocalBackupEnabled Execution ############
+if [[ "$LocalBackupEnabled" == "Y" ]]; then
+    echo "$timestamp INFO: Local backup is enabled. Checking if local backup directory exists..."
+
+    # Start the retry process
+    handle_retry
+
+    # If directory still doesn't exist after retries, proceed thru
+    if [[ ! -d "$LocalBackupDir/$BackupLocation" ]]; then
+        echo "$timestamp ERROR: Failed to create local backup directory $LocalBackupDir/$BackupLocation after $LocalBackupMaxRetries retries. Exiting..."
+    fi
+
+    # Proceed with backup or other tasks
 else
-	echo "$(date "+%d.%m.%Y %T") INFO: Script not running - proceeding."
-	touch /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/upload_running$JobName
+    echo "$timestamp INFO: Local backup is disabled. Skipping backup steps."
 fi
 
-#######  check if rclone installed  ##########
-echo "$(date "+%d.%m.%Y %T") INFO: Checking if rclone installed successfully."
-if [[ -f "$RcloneMountLocation/mountcheck" ]]; then
-	echo "$(date "+%d.%m.%Y %T") INFO: rclone installed successfully - proceeding with upload."
-else
-	echo "$(date "+%d.%m.%Y %T") INFO: rclone not installed - will try again later."
-	rm /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/upload_running$JobName
-	exit
-fi
-
-####### Rotating serviceaccount.json file if using Service Accounts #######
+############ Rotating serviceaccount.json file if using Service Accounts ############
 if [[ $UseServiceAccountUpload == 'Y' ]]; then
-	cd /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/
+	cd /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName/
 	CounterNumber=$(find -name 'counter*' | cut -c 11,12)
 	CounterCheck="1"
 	if [[ "$CounterNumber" -ge "$CounterCheck" ]];then
-		echo "$(date "+%d.%m.%Y %T") INFO: Counter file found for ${RcloneUploadRemoteName}."
+		echo "$timestamp INFO: Counter file found for ${RcloneRemoteName}...."
 	else
-		echo "$(date "+%d.%m.%Y %T") INFO: No counter file found for ${RcloneUploadRemoteName}. Creating counter_1."
-		touch /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/counter_1
+		echo "$timestamp INFO: No counter file found for ${RcloneRemoteName}. Creating counter_1...."
+		touch /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName/counter_1
 		CounterNumber="1"
 	fi
 	ServiceAccount="--drive-service-account-file=$ServiceAccountDirectory/$ServiceAccountFile$CounterNumber.json"
-	echo "$(date "+%d.%m.%Y %T") INFO: Adjusted service_account_file for upload remote ${RcloneUploadRemoteName} to ${ServiceAccountFile}${CounterNumber}.json based on counter ${CounterNumber}."
+	echo "$timestamp INFO: Adjusted service_account_file for upload remote ${RcloneRemoteName} to ${ServiceAccountFile}${CounterNumber}.json based on counter ${CounterNumber}..."
 else
-	echo "$(date "+%d.%m.%Y %T") INFO: Uploading using upload remote ${RcloneUploadRemoteName}"
+	echo "$timestamp INFO: Uploading using upload remote ${RcloneRemoteName}..."
 	ServiceAccount=""
 fi
 
-#######  Upload files  ##########
-
-# Check bind option
-if [[  $CreateBindMount == 'Y' ]]; then
-	echo "$(date "+%d.%m.%Y %T") INFO: *** Checking if IP address ${RCloneMountIP} already created for upload to remote ${RcloneUploadRemoteName}"
-	ping -q -c2 $RCloneMountIP > /dev/null # -q quiet, -c number of pings to perform
+############ Check bind option ############
+if [[ $RcloneBindMountIPEnabled == 'Y' ]]; then
+	echo "$timestamp INFO: *** Checking if IP address ${RcloneMountIP} already created for upload to remote ${RcloneRemoteName}..."
+	ping -q -c2 $RcloneMountIP > /dev/null # -q quiet, -c number of pings to perform
 	if [ $? -eq 0 ]; then # ping returns exit status 0 if successful
-		echo "$(date "+%d.%m.%Y %T") INFO: *** IP address ${RCloneMountIP} already created for upload to remote ${RcloneUploadRemoteName}"
+		echo "$timestamp INFO: *** IP address ${RcloneMountIP} already created for upload to remote ${RcloneRemoteName}..."
 	else
-		echo "$(date "+%d.%m.%Y %T") INFO: *** Creating IP address ${RCloneMountIP} for upload to remote ${RcloneUploadRemoteName}"
-		ip addr add $RCloneMountIP/24 dev $NetworkAdapter label $NetworkAdapter:$VirtualIPNumber
+		echo "$timestamp INFO: *** Creating IP address ${RcloneMountIP} for upload to remote ${RcloneRemoteName}..."
+		ip addr add $RcloneMountIP/24 dev $NetworkAdapter label $NetworkAdapter:$VirtualIPNumber
 	fi
 else
-	RCloneMountIP=""
+	RcloneMountIP=""
 fi
 
-#  Remove --delete-empty-src-dirs if rclone sync or copy
-if [[  $RcloneCommand == 'move' ]]; then
-	echo "$(date "+%d.%m.%Y %T") INFO: *** Using rclone move - will add --delete-empty-src-dirs to upload."
+############ Remove --delete-empty-src-dirs if rclone sync or copy ############
+if [[ $RcloneCommand == 'move' ]]; then
+	echo "$timestamp INFO: *** Using rclone move - will add --delete-empty-src-dirs to upload..."
 	DeleteEmpty="--delete-empty-src-dirs "
 else
-	echo "$(date "+%d.%m.%Y %T") INFO: *** Not using rclone move - will remove --delete-empty-src-dirs to upload."
+	echo "$timestamp INFO: *** Not using rclone move - will remove --delete-empty-src-dirs to upload..."
 	DeleteEmpty=""
 fi
 
-#  Check --backup-directory
-if [[  $BackupJob == 'Y' ]]; then
-	echo "$(date "+%d.%m.%Y %T") INFO: *** Will backup to ${BackupRemoteLocation} and use  ${BackupRemoteDeletedLocation} as --backup-directory with ${BackupRetention} retention for ${RcloneUploadRemoteName}."
+############ Check --backup-directory ############
+if [[ $RemoteBackupJobEnabled == 'Y' ]]; then
+	echo "$timestamp INFO: *** Will backup to ${BackupLocation} and use  ${BackupDeletedLocation} as --backup-directory with ${BackupRemoteDeletedRetention} retention for ${RcloneRemoteName}..."
 	LocalFilesLocation="$LocalFilesShare"
-	BackupDir="--backup-dir $RcloneUploadRemoteName:$BackupRemoteDeletedLocation"
+	RcloneRemoteBackupDir="--backup-dir $RcloneRemoteName:$BackupDeletedLocation"
 else
-	BackupRemoteLocation=""
-	BackupRemoteDeletedLocation=""
-	BackupRetention=""
-	BackupDir=""
+	BackupLocation=""
+	BackupDeletedLocation=""
+	BackupRemoteDeletedRetention=""
+	RcloneRemoteBackupDir=""
 fi
 
-# process files
-	rclone $RcloneCommand $LocalFilesLocation $RcloneUploadRemoteName:$BackupRemoteLocation $ServiceAccount $BackupDir \
-	--user-agent="$RcloneUploadRemoteName" \
-	-vv \
-	--buffer-size 512M \
-	--drive-chunk-size 512M \
-	--tpslimit 8 \
-	--checkers 8 \
-	--transfers 4 \
-	--order-by modtime,$ModSort \
-	--min-age $MinimumAge \
-	$Command1 $Command2 $Command3 $Command4 $Command5 $Command6 $Command7 $Command8 \
-	--exclude *fuse_hidden* \
-	--exclude *_HIDDEN \
-	--exclude .recycle** \
-	--exclude .Recycle.Bin/** \
-	--exclude *.backup~* \
-	--exclude *.partial~* \
-	--drive-stop-on-upload-limit \
-	--bwlimit "${BWLimit1Time},${BWLimit1} ${BWLimit2Time},${BWLimit2} ${BWLimit3Time},${BWLimit3}" \
-	--bind=$RCloneMountIP $DeleteEmpty
+##################################################
+########## BEGIN RCLONE APPDATA COMMANDS #########
+##################################################
 
-# Delete old files from mount
-if [[  $BackupJob == 'Y' ]]; then
-	echo "$(date "+%d.%m.%Y %T") INFO: *** Removing files older than ${BackupRetention} from $BackupRemoteLocation for ${RcloneUploadRemoteName}."
-	rclone delete --min-age $BackupRetention $RcloneUploadRemoteName:$BackupRemoteDeletedLocation
+echo "$timestamp INFO: Beginning rclone commands..."
+
+############ appdata Remote Backup ############
+# Check if appdata is included in the upload. If yes, stop Docker containers to prevent corrupted upload and backup appdata
+echo "$timestamp INFO: Starting rclone backup for appdata if it is included in the upload..."
+
+if find "$LocalFilesLocation" -type d -name "appdata" | grep -q "/mnt/user/appdata"; then
+    echo "$timestamp INFO: appdata detected in the upload, stopping all Docker containers..."
+
+    # Stop all Docker containers before backup to prevent uploading corrupted appdata
+    if [ $(docker ps -q | wc -l) -gt 0 ]; then
+        for container in $(docker ps -q); do
+            echo "$timestamp INFO: Stopping Docker container $container..."
+            docker stop "$container"
+        done
+
+        echo "$timestamp INFO: Waiting for Docker containers to stop..."
+        sleep 10
+    else
+    echo "$timestamp INFO: No Docker containers running, skipping stop..."
+    fi
+
+    # Sleep to ensure all containers are fully stopped
+    sleep 10
+
+    # Perform rclone backup for appdata to remote
+    echo "$timestamp INFO: Starting remote backup for appdata..."
+    rclone $RcloneCommand "$LocalFilesLocation/appdata" "$RcloneRemoteName:$BackupLocation/appdata" $ServiceAccount $RcloneRemoteBackupDir \
+        -vv \
+        --buffer-size 512M \
+        --drive-chunk-size 512M \
+        --tpslimit 8 \
+        --checkers 8 \
+        --transfers 4 \
+        --order-by modtime,$ModSort \
+        --filter-from "$RcloneFilterFile" \
+        --bwlimit "${RcloneBWLimit1Time},${RcloneBWLimit1BW} ${RcloneBWLimit2Time},${RcloneBWLimit2BW} ${RcloneBWLimit3Time},${RcloneBWLimit3BW}" \
+        --bind=$RcloneMountIP $DeleteEmpty
+else
+    echo "$timestamp INFO: /mnt/user/appdata not detected in the upload. Skip stopping Docker containers..."
 fi
 
-#######  Remove Control Files  ##########
+############ appdata Local Backup ############
+# Check if the remote appdata backup was successful
+if [ $? -eq 0 ]; then
+    echo "$timestamp INFO: Finished appdata remote backup..."
 
-# update counter and remove other control files
-if [[  $UseServiceAccountUpload == 'Y' ]]; then
+    # If LocalBackupEnabled is set, perform local backup for appdata
+    if [[ $LocalBackupEnabled == 'Y' ]]; then
+        echo "$timestamp INFO: Local backup enabled, starting local backup for appdata..."
+        rclone $RcloneCommand "$LocalFilesLocation/appdata" "$LocalBackupDir/$BackupLocation/appdata" \
+            -vv \
+            --buffer-size 512M \
+            --drive-chunk-size 512M \
+            --tpslimit 8 \
+            --checkers 8 \
+            --transfers 4 \
+            --order-by modtime,$ModSort \
+            --filter-from "$RcloneFilterFile" \
+            --bind=$RcloneMountIP $DeleteEmpty
+
+        echo "$timestamp INFO: Finished local appdata backup..."
+    else
+        # After appdata backup is complete, start Docker containers again
+        echo "$timestamp INFO: Local backup not enabled, starting all Docker containers after appdata upload..."
+        for container in $(docker ps -a -q); do
+            echo "$timestamp INFO: Starting Docker container $container..."
+            docker start "$container"
+        done
+    
+        # Sleep to ensure all containers are fully stopped
+        echo "$timestamp INFO: Docker containers started. Waiting to ensure all containers are running..."
+        sleep 10
+    fi
+else
+    echo "$timestamp ERROR: Remote appdata backup failed. Skipping local backup for appdata and ensuring docker containers are started..."
+    for container in $(docker ps -a -q); do
+        echo "$timestamp INFO: Starting Docker container $container..."
+        docker start "$container"
+    done
+fi
+
+##################################################
+############ BEGIN RCLONE DATA COMMANDS ##########
+##################################################
+
+############ After appdata backup is completed, proceed with the rest of the data
+echo "$timestamp INFO: Starting backup for the rest of the files..."
+
+############ Data Remote Backup ############
+# Perform remote backup for the rest of the files, excluding appdata #
+rclone $RcloneCommand "$LocalFilesLocation" "$RcloneRemoteName:$BackupLocation" $ServiceAccount $RcloneRemoteBackupDir \
+    -vv \
+    --buffer-size 512M \
+    --drive-chunk-size 512M \
+    --tpslimit 8 \
+    --checkers 8 \
+    --transfers 4 \
+    --order-by modtime,$ModSort \
+    --filter-from "$RcloneFilterFile" \
+    --exclude "appdata/**" \
+    --bwlimit "${RcloneBWLimit1Time},${RcloneBWLimit1BW} ${RcloneBWLimit2Time},${RcloneBWLimit2BW} ${RcloneBWLimit3Time},${RcloneBWLimit3BW}" \
+    $RcloneRemoteCommand1 $RcloneRemoteCommand2 $RcloneRemoteCommand3 \
+    --bind=$RcloneMountIP $DeleteEmpty
+
+# Check if the remote backup was successful
+if [ $? -eq 0 ]; then
+    echo "$timestamp INFO: Finished remote backup for the rest of the files..."
+
+############ Data Local Backup ############
+    # If LocalBackupEnabled is on, perform local backup for the rest of the files, excluding appdata
+    if [[ $LocalBackupEnabled == 'Y' ]]; then
+        echo "$timestamp INFO: Starting local backup for the rest of the files..."
+
+        rclone $RcloneCommand "$LocalFilesLocation" "$LocalBackupDir/$BackupLocation" \
+            -vv \
+            --buffer-size 512M \
+            --drive-chunk-size 512M \
+            --tpslimit 8 \
+            --checkers 8 \
+            --transfers 4 \
+            --order-by modtime,$ModSort \
+            --filter-from "$RcloneFilterFile" \
+            --exclude "appdata/**" \
+            $RcloneLocalCommand1 $RcloneLocalCommand2 $RcloneLocalCommand3 \
+            --bind=$RcloneMountIP $DeleteEmpty 
+            
+        echo "$timestamp INFO: Finished local backup for the rest of the files..."
+
+    else
+        echo "$timestamp INFO: Local backup not enabled, skipping..."
+    fi
+else
+    echo "$timestamp ERROR: Remote backup for the rest of the files failed..."
+fi
+
+echo "$timestamp INFO: *** Completed rclone command..."
+
+##################################################
+########### BEGIN RCLONE CLEANUP COMMANDS ########
+##################################################
+
+# If backup job enabled, delete old backup files from mount
+if [[ $RemoteBackupJobEnabled == 'Y' ]]; then
+	echo "$timestamp INFO: *** Removing files older than ${BackupRemoteDeletedRetention} from $BackupLocation for ${RcloneRemoteName}..."
+	rclone delete --min-age $BackupRemoteDeletedRetention $RcloneRemoteName:$BackupDeletedLocation
+fi
+
+# After the rclone command finishes, if we stopped docker containers, start them again
+if find "$LocalFilesLocation" -type d -name "appdata" | grep -q "/mnt/user/appdata"; then
+    echo "$timestamp INFO: Starting all Docker containers after upload..."
+
+    # Start all Docker containers after backup
+    for container in $(docker ps -a -q); do
+        echo "$timestamp INFO: Starting Docker container $container..."
+        docker start "$container"
+    done
+fi
+
+# Update counter and remove other control files
+if [[ $UseServiceAccountUpload == 'Y' ]]; then
 	if [[ "$CounterNumber" == "$CountServiceAccounts" ]];then
-		rm /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/counter_*
-		touch /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/counter_1
-		echo "$(date "+%d.%m.%Y %T") INFO: Final counter used - resetting loop and created counter_1."
+		rm /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName/counter_*
+		touch /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName/counter_1
+		echo "$timestamp INFO: Final counter used - resetting loop and created counter_1..."
 	else
-		rm /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/counter_*
+		rm /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName/counter_*
 		CounterNumber=$((CounterNumber+1))
-		touch /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/counter_$CounterNumber
-		echo "$(date "+%d.%m.%Y %T") INFO: Created counter_${CounterNumber} for next upload run."
+		touch /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName/counter_$CounterNumber
+		echo "$timestamp INFO: Created counter_${CounterNumber} for next upload run..."
 	fi
 else
-	echo "$(date "+%d.%m.%Y %T") INFO: Not utilising service accounts."
+	echo "$timestamp INFO: Not utilising service accounts..."
 fi
 
-# remove dummy file
-rm /mnt/user/appdata/other/rclone/remotes/$RcloneUploadRemoteName/upload_running$JobName
-echo "$(date "+%d.%m.%Y %T") INFO: Script complete"
+echo "$timestamp INFO: Script complete"
 
 exit
