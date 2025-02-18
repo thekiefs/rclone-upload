@@ -107,33 +107,8 @@ echo "$timestamp INFO: Filter file created at $RcloneFilterFile..."
 ###############################################################################
 
 ##################################################
-############ RCLONE SPECIFIC SETTINGS ############
-########### Check if rclone installed ###########
-echo "$timestamp INFO: Checking if rclone installed successfully..."
-if command -v rclone &> /dev/null; then
-	echo "$timestamp INFO: rclone installed successfully - proceeding with upload..."
-else
-	echo "$timestamp INFO: rclone not installed - will try again later...."
-	exit
-fi
-
-############ Preparing mount location variables & files ############
-if [[ $RemoteBackupJobEnabled == 'Y' ]]; then
-	LocalFilesLocation="$LocalFilesShare"
-	echo "$timestamp INFO: *** Backup selected. Files will be copied or synced from ${LocalFilesLocation} for ${RcloneRemoteName} ***..."
-else
-	LocalFilesLocation="$LocalFilesShare/$RcloneRemoteName"
-	echo "$timestamp INFO: *** Rclone move selected. Files will be moved from ${LocalFilesLocation} for ${RcloneRemoteName} ***..."
-fi
-
-RcloneMountLocation="$RcloneMountShare/$RcloneRemoteName" # Location of rclone mount
-
-############ Create directory for script files ############
-mkdir -p /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName # for script files
-
-############ If LocalBackupEnabled is true, check if local backup directory is available, if not, create it or mount it ############
-LocalBackupMaxRetries=1  # Max retries after mounting
-LocalBackupRetryCount=0  # Retry count
+################ SCRIPT FUNCTIONS ################
+##################################################
 
 # Function to create the directory
 create_directory() {
@@ -173,6 +148,59 @@ handle_retry() {
         fi
     done
 }
+
+# Function to start docker containers
+start_docker_containers() {
+    for container in $(docker ps -a -q); do
+        echo "$timestamp INFO: Starting Docker container $container..."
+        docker start "$container"
+    done
+
+    # Sleep to ensure all containers are fully started
+    echo "$timestamp INFO: Docker containers started. Waiting to ensure all containers are running..."
+    sleep 10
+}
+
+# Function to stop all Docker containers
+stop_docker_containers() {
+    for container in $(docker ps -q); do
+        echo "$timestamp INFO: Stopping Docker container $container..."
+        docker stop "$container"
+    done
+
+    # Sleep to ensure all containers are fully stopped
+    echo "$timestamp INFO: Waiting for Docker containers to stop..."
+    sleep 10
+}
+
+##################################################
+############ RCLONE SPECIFIC SETTINGS ############
+########### Check if rclone installed ###########
+echo "$timestamp INFO: Checking if rclone installed successfully..."
+if command -v rclone &> /dev/null; then
+	echo "$timestamp INFO: rclone installed successfully - proceeding with upload..."
+else
+	echo "$timestamp INFO: rclone not installed - will try again later...."
+	exit
+fi
+
+############ Preparing mount location variables & files ############
+if [[ $RemoteBackupJobEnabled == 'Y' ]]; then
+	LocalFilesLocation="$LocalFilesShare"
+	echo "$timestamp INFO: *** Backup selected. Files will be copied or synced from ${LocalFilesLocation} for ${RcloneRemoteName} ***..."
+else
+	LocalFilesLocation="$LocalFilesShare/$RcloneRemoteName"
+	echo "$timestamp INFO: *** Rclone move selected. Files will be moved from ${LocalFilesLocation} for ${RcloneRemoteName} ***..."
+fi
+
+RcloneMountLocation="$RcloneMountShare/$RcloneRemoteName" # Location of rclone mount
+
+############ Create directory for script files ############
+mkdir -p /mnt/user/appdata/other/rclone/remotes/$RcloneRemoteName # for script files
+
+############ If LocalBackupEnabled is true, check if local backup directory is available, if not, create it or mount it ############
+LocalBackupMaxRetries=1  # Max retries after mounting
+LocalBackupRetryCount=0  # Retry count
 
 ############ Main LocalBackupEnabled Execution ############
 if [[ "$LocalBackupEnabled" == "Y" ]]; then
@@ -260,13 +288,8 @@ if find "$LocalFilesLocation" -type d -name "appdata" | grep -q "/mnt/user/appda
 
     # Stop all Docker containers before backup to prevent uploading corrupted appdata
     if [ $(docker ps -q | wc -l) -gt 0 ]; then
-        for container in $(docker ps -q); do
-            echo "$timestamp INFO: Stopping Docker container $container..."
-            docker stop "$container"
-        done
+        stop_docker_containers
 
-        echo "$timestamp INFO: Waiting for Docker containers to stop..."
-        sleep 10
     else
     echo "$timestamp INFO: No Docker containers running, skipping stop..."
     fi
@@ -296,7 +319,7 @@ fi
 if [ $? -eq 0 ]; then
     echo "$timestamp INFO: Finished appdata remote backup..."
 
-    # If LocalBackupEnabled is set, perform local backup for appdata
+    # If LocalBackupEnabled is true, perform local backup for appdata
     if [[ $LocalBackupEnabled == 'Y' ]]; then
         echo "$timestamp INFO: Local backup enabled, starting local backup for appdata..."
         rclone $RcloneCommand "$LocalFilesLocation/appdata" "$LocalBackupDir/$BackupLocation/appdata" \
@@ -311,24 +334,18 @@ if [ $? -eq 0 ]; then
             --bind=$RcloneMountIP $DeleteEmpty
 
         echo "$timestamp INFO: Finished local appdata backup..."
-    else
-        # After appdata backup is complete, start Docker containers again
-        echo "$timestamp INFO: Local backup not enabled, starting all Docker containers after appdata upload..."
-        for container in $(docker ps -a -q); do
-            echo "$timestamp INFO: Starting Docker container $container..."
-            docker start "$container"
-        done
-    
-        # Sleep to ensure all containers are fully stopped
-        echo "$timestamp INFO: Docker containers started. Waiting to ensure all containers are running..."
-        sleep 10
+
+        # After rclone complete, start Docker containers
+        start_docker_containers
+
+    # If LocalBackupEnabled is false, start Docker containers again
+    else 
+        echo "$timestamp INFO: Local backup not enabled, starting Docker containers..."
+        start_docker_containers
     fi
 else
     echo "$timestamp ERROR: Remote appdata backup failed. Skipping local backup for appdata and ensuring docker containers are started..."
-    for container in $(docker ps -a -q); do
-        echo "$timestamp INFO: Starting Docker container $container..."
-        docker start "$container"
-    done
+    start_docker_containers
 fi
 
 ##################################################
@@ -402,10 +419,7 @@ if find "$LocalFilesLocation" -type d -name "appdata" | grep -q "/mnt/user/appda
     echo "$timestamp INFO: Starting all Docker containers after upload..."
 
     # Start all Docker containers after backup
-    for container in $(docker ps -a -q); do
-        echo "$timestamp INFO: Starting Docker container $container..."
-        docker start "$container"
-    done
+    start_docker_containers
 fi
 
 # Update counter and remove other control files
